@@ -1,8 +1,8 @@
 // Network-first: staff always get the newest version when online,
 // cached copy when offline. Bump VERSION after each update.
-const VERSION = "ccr-v1";
+const VERSION = "ccr-v3";
 const FILES = ["./", "index.html", "styles.css", "config.js", "api.js", "excel.js", "app.js",
-  "lib/html5-qrcode.min.js", "lib/exceljs.min.js", "manifest.json", "icons/icon-192.png"];
+  "html5-qrcode.min.js", "exceljs.min.js", "manifest.json", "icon-192.png"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
