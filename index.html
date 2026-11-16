@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#000000">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="Receiving">
+  <title>Carton Receiving</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css?v=1">
+</head>
+<body>
+  <div id="app"></div>
+
+  <!-- full-screen flash shown on every scan -->
+  <div id="flash"></div>
+  <div id="toast" class="toast hidden"></div>
+  <div id="modal" class="modal hidden"><div class="modal-card" id="modalCard"></div></div>
+
+  <!-- camera -->
+  <div id="camera" class="camera hidden">
+    <div class="cam-top">
+      <div>
+        <div class="cam-title" id="camTitle">Scan</div>
+        <div class="cam-sub" id="camSub"></div>
+      </div>
+      <button class="cam-btn" id="camTorch" title="Flashlight">&#128294;</button>
+    </div>
+    <div id="reader"></div>
+    <div class="cam-last" id="camLast">&nbsp;</div>
+    <div class="cam-bottom">
+      <div class="cam-count"><span id="camCount">0</span><small>pcs in carton</small></div>
+      <button class="btn btn-white" id="camDone">Done</button>
+    </div>
+  </div>
+
+  <script src="config.js?v=1"></script>
+  <script src="lib/html5-qrcode.min.js"></script>
+  <script src="lib/exceljs.min.js" defer></script>
+  <script src="api.js?v=1"></script>
+  <script src="excel.js?v=1"></script>
+  <script src="app.js?v=1"></script>
+</body>
+</html>
