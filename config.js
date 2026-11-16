@@ -4,8 +4,8 @@
 //  Leave both empty to run in DEMO MODE (data stays on this one device).
 // =====================================================================
 window.APP_CONFIG = {
-  SUPABASE_URL: "",        // e.g. "https://abcdefghijk.supabase.co"
-  SUPABASE_ANON_KEY: "",   // the "anon public" key
+  SUPABASE_URL: "https://noykwvxmlxztlfxhfdbn.supabase.co",
+  SUPABASE_ANON_KEY: "sb_publishable_vn65zwjK4VQDMv6B_v4voQ_iOXnO5Nd",
 
   APP_NAME: "Carton Receiving",
   // Ignore the SAME barcode read again within this many milliseconds

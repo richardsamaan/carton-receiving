@@ -27,13 +27,14 @@
   async function rpcRemote(fn, params) {
     let res;
     try {
-      res = await fetch(cfg.SUPABASE_URL.replace(/\/$/, "") + "/rest/v1/rpc/" + fn, {
+      const key = String(cfg.SUPABASE_ANON_KEY).trim();
+      const headers = { "Content-Type": "application/json", apikey: key };
+      // old-style "anon" keys (start with eyJ) also go in Authorization;
+      // new "sb_publishable_" keys must only be sent as apikey
+      if (key.startsWith("eyJ")) headers.Authorization = "Bearer " + key;
+      res = await fetch(String(cfg.SUPABASE_URL).trim().replace(/\/$/, "") + "/rest/v1/rpc/" + fn, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          apikey: cfg.SUPABASE_ANON_KEY,
-          Authorization: "Bearer " + cfg.SUPABASE_ANON_KEY
-        },
+        headers,
         body: JSON.stringify(params || {})
       });
     } catch (e) {
