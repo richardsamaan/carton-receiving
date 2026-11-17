@@ -476,7 +476,7 @@
     shell(`
       <div class="card">
         <h3>Upload delivery file</h3>
-        <p class="muted" style="margin-top:-4px">Excel or CSV with 2 columns: <b>Carton No</b> and <b>Barcode</b> (one row per piece). <button class="link" id="tplBtn">Download template</button></p>
+        <p class="muted" style="margin-top:-4px">Excel or CSV with 3 columns: <b>Carton No</b>, <b>Item code</b> (12 digits) and <b>On Hand</b> (qty in the carton). <button class="link" id="tplBtn">Download template</button></p>
         <div class="grid2">
           <div class="field"><label>Delivery / GTV reference</label><input class="input" id="dRef" placeholder="e.g. GTV 12345"></div>
           <div class="field"><label>Delivery date</label><input class="input" id="dDate" type="date" value="${today()}"></div>
@@ -497,9 +497,10 @@
         if (!r.lines.length) throw new Error("No rows with a carton number and barcode were found.");
         pendingUpload = r;
         if (!$("#dRef").value) $("#dRef").value = f.name.replace(/\.(xlsx|csv)$/i, "");
-        $("#dPreview").innerHTML = `<div class="ok-box">Found <b>${num(r.total)} pieces</b> in <b>${num(r.cartons)} cartons</b>.</div>` +
-          (!r.headerFound ? `<div class="warn-box">No header row found - using column A as Carton No and column B as Barcode.</div>` : "") +
-          (r.badRows.length ? `<div class="warn-box">${r.badRows.length} row(s) skipped because carton or barcode is empty (rows ${r.badRows.slice(0, 10).join(", ")}${r.badRows.length > 10 ? "…" : ""}).</div>` : "");
+        $("#dPreview").innerHTML = `<div class="ok-box">Found <b>${num(r.total)} pieces</b> (${num(r.rows)} lines) in <b>${num(r.cartons)} cartons</b>.</div>` +
+          (!r.headerFound ? `<div class="warn-box">No header row found - using column A = Carton No, B = Item code${r.qtyFound ? ", C = On Hand" : ""}.</div>` : "") +
+          (!r.qtyFound ? `<div class="warn-box">No On Hand / Qty column found - each row is counted as 1 piece.</div>` : "") +
+          (r.badRows.length ? `<div class="warn-box">${r.badRows.length} row(s) skipped because carton, item code or qty is missing / wrong (rows ${r.badRows.slice(0, 10).join(", ")}${r.badRows.length > 10 ? "…" : ""}).</div>` : "");
         $("#dUpload").disabled = false;
       } catch (er) { $("#dPreview").innerHTML = `<div class="err-box">${esc(er.message)}</div>`; }
     };

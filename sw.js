@@ -1,6 +1,6 @@
 // Network-first: staff always get the newest version when online,
 // cached copy when offline. Bump VERSION after each update.
-const VERSION = "ccr-v3";
+const VERSION = "ccr-v4";
 const FILES = ["./", "index.html", "styles.css", "config.js", "api.js", "excel.js", "app.js",
   "html5-qrcode.min.js", "exceljs.min.js", "manifest.json", "icon-192.png"];
 
