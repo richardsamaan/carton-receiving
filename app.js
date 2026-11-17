@@ -93,11 +93,12 @@
   // ================================================================ camera scanner
   const Scanner = {
     inst: null, onCode: null, last: { code: "", t: 0 }, anyT: 0, torch: false,
-    async open({ title, sub, onCode, showCount }) {
-      this.onCode = onCode; this.last = { code: "", t: 0 };
+    async open({ title, sub, onCode, showCount, countLabel }) {
+      this.onCode = onCode; this.armed = false; this.got = false;
       $("#camTitle").textContent = title; $("#camSub").textContent = sub || "";
       $("#camLast").textContent = " "; $("#camLast").className = "cam-last";
       $(".cam-count").style.visibility = showCount ? "visible" : "hidden";
+      $("#camCountLabel").textContent = countLabel || "pcs in carton";
       $("#camera").classList.remove("hidden");
       $("#camTorch").classList.add("hidden");
       try {
@@ -114,7 +115,8 @@
           { facingMode: "environment" },
           {
             fps: 12,
-            qrbox: (w, h) => ({ width: Math.max(120, Math.floor(w * 0.86)), height: Math.max(80, Math.floor(Math.min(h * 0.4, w * 0.5))) }),
+            // narrow aiming box: only the barcode in the middle is read
+            qrbox: (w, h) => ({ width: Math.max(120, Math.floor(w * 0.86)), height: Math.max(60, Math.floor(Math.min(h * 0.22, w * 0.3))) }),
             disableFlip: true
           },
           (text) => this.hit(text),
@@ -130,15 +132,34 @@
                  : "The camera could not start (" + (e.message || e) + "). You can type the barcode manually.");
       }
     },
+    // HOLD TO SCAN: the camera only reads while the SCAN button is held down.
+    // One barcode per hold.
+    armed: false, got: false,
     hit(raw) {
       const code = String(raw || "").trim();
-      if (!code) return;
-      const now = Date.now();
-      if (now - this.anyT < 350) return;                        // camera burst
-      if (code === this.last.code && now - this.last.t < (cfg.SAME_BARCODE_COOLDOWN_MS || 1500)) { this.last.t = now; return; }
-      this.last = { code, t: now }; this.anyT = now;
+      if (!code || !this.armed) return;
+      this.armed = false; this.got = true;
+      $("#camHold").classList.remove("on"); $("#camHold").classList.add("done");
+      $("#reader").classList.remove("reading");
       if (this.onCode) this.onCode(code);
     },
+    pressStart(e) {
+      if (e) e.preventDefault();
+      unlockAudio();
+      this.armed = true; this.got = false;
+      $("#camHold").classList.add("on"); $("#camHold").classList.remove("done");
+      $("#reader").classList.add("reading");
+      this.showMsg("Reading… keep the barcode inside the box", "");
+    },
+    pressEnd(e) {
+      if (e) e.preventDefault();
+      const wasArmed = this.armed;
+      this.armed = false;
+      $("#camHold").classList.remove("on", "done");
+      $("#reader").classList.remove("reading");
+      if (wasArmed && !this.got) { signal("err"); this.showMsg("No barcode found - aim and hold again", "warn"); }
+    },
+    showMsg(text, kind) { const el = $("#camLast"); el.className = "cam-last " + (kind || ""); el.textContent = text; },
     showLast(code, kind = "ok", note = "") {
       const el = $("#camLast"); el.className = "cam-last " + kind;
       el.textContent = (kind === "ok" ? "✓ " : "⚠ ") + code + (note ? "  " + note : "");
@@ -162,6 +183,12 @@
     }
   };
   $("#camDone").onclick = () => Scanner.close();
+  (function bindHold() {
+    const b = $("#camHold");
+    b.addEventListener("pointerdown", (e) => { try { b.setPointerCapture(e.pointerId); } catch (x) {} Scanner.pressStart(e); });
+    ["pointerup", "pointercancel"].forEach((ev) => b.addEventListener(ev, (e) => Scanner.pressEnd(e)));
+    b.addEventListener("contextmenu", (e) => e.preventDefault());
+  })();
 
   // ================================================================ draft carton (saved on phone)
   const draftKey = () => "ccr_draft_" + (session && session.user.id);
@@ -213,7 +240,7 @@
   function shell(inner, opts = {}) {
     const u = session.user;
     const tabs = u.role === "admin"
-      ? `<nav class="tabs">${[["receive", "Receive"], ["deliveries", "Deliveries"], ["cartons", "Cartons"], ["staff", "Staff"]]
+      ? `<nav class="tabs">${[["receive", "Receive"], ["deliveries", "Deliveries"], ["cartons", "Cartons"], ["boxes", "Boxes"], ["staff", "Staff"]]
           .map(([k, l]) => `<button class="tab ${adminTab === k ? "on" : ""}" data-tab="${k}">${l}</button>`).join("")}</nav>` : "";
     app.innerHTML = `
       ${DEMO ? `<div class="demo-bar">DEMO MODE - data is saved only on this device</div>` : ""}
@@ -230,9 +257,44 @@
     }));
   }
 
-  // ================================================================ RECEIVE (staff)
+  // ================================================================ RECEIVE: home (2 options)
+  let mode = localStorage.getItem("ccr_mode") || "home";
+  const setMode = (m) => { mode = m; try { localStorage.setItem("ccr_mode", m); } catch (e) {} renderReceive(); };
+  const backBar = (title) => `<div class="back-bar"><button class="link" id="goHome">&larr; Home</button><b>${esc(title)}</b></div>`;
+  function bindBack() { const b = $("#goHome"); if (b) b.onclick = () => setMode("home"); }
+
   function renderReceive() {
+    if (mode === "stock") return renderStock();
+    if (mode === "boxes") return renderBoxes();
+    renderHome();
+  }
+
+  function renderHome() {
+    loadBoxDraft();
+    const stockBusy = draft && draft.carton ? `<span class="pill a">In progress: carton ${esc(draft.carton)} (${draft.scans.length} pcs)</span>` : "";
+    const boxBusy = boxDraft ? `<span class="pill a">In progress: ${esc(boxDraft.ref)} (${boxDraft.boxes.length} boxes)</span>` : "";
     shell(`
+      <div class="home-grid">
+        <button class="home-card" id="goBoxes">
+          <div class="home-ico">&#128230;</div>
+          <div class="home-title">Receive Boxes</div>
+          <div class="home-sub">Count the boxes of a new shipment. Scan each box label once.</div>
+          ${boxBusy}
+        </button>
+        <button class="home-card" id="goStock">
+          <div class="home-ico">&#127991;</div>
+          <div class="home-title">Receive Stock</div>
+          <div class="home-sub">Open a box: scan the carton label, then every item inside.</div>
+          ${stockBusy}
+        </button>
+      </div>`);
+    $("#goBoxes").onclick = () => setMode("boxes");
+    $("#goStock").onclick = () => setMode("stock");
+  }
+
+  // ================================================================ RECEIVE STOCK
+  function renderStock() {
+    shell(backBar("Receive Stock") + `
       <section class="cell carton" id="cartonCell">
         <div class="cell-label"><span>Carton No.</span><span id="cartonTools"></span></div>
         <div id="cartonBody"></div>
@@ -271,6 +333,7 @@
     };
     $("#submitBtn").onclick = submitCarton;
     $("#refreshRecent").onclick = loadRecent;
+    bindBack();
     updateReceive(); loadRecent();
   }
 
@@ -470,6 +533,254 @@
     } catch (e) { el.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
   }
 
+  // ================================================================ RECEIVE BOXES
+  const boxKey = () => "ccr_box_" + (session && session.user.id);
+  let boxDraft = null;
+  function loadBoxDraft() { try { boxDraft = JSON.parse(localStorage.getItem(boxKey())); } catch (e) { boxDraft = null; } }
+  const saveBoxDraft = () => { try { if (boxDraft) localStorage.setItem(boxKey(), JSON.stringify(boxDraft)); else localStorage.removeItem(boxKey()); } catch (e) {} };
+  const upc = (x) => String(x || "").trim().toUpperCase();
+
+  function renderBoxes() {
+    loadBoxDraft();
+    if (!boxDraft) return renderBoxStart();
+    shell(backBar("Receive Boxes") + `
+      <section class="cell carton set">
+        <div class="cell-label"><span>Box count</span><button class="link" id="bxCancel">Cancel count</button></div>
+        <div class="cell-value">${esc(boxDraft.ref)}</div>
+        <div class="hint" style="${boxDraft.deliveryId ? "color:#0d5c30;font-weight:600" : ""}">${boxDraft.deliveryId
+          ? `&#10003; Delivery file: ${esc(boxDraft.deliveryRef)} (${num(boxDraft.fileCartons.length)} boxes)` : "No delivery file - plain count"}</div>
+      </section>
+      <section class="cell qty">
+        <div><div class="cell-label">Boxes scanned</div><div class="qty-num" id="bxNum">0</div></div>
+        <div class="qty-side" id="bxSide"></div>
+      </section>
+      <div class="progress ${boxDraft.deliveryId ? "" : "hidden"}"><div id="bxBar"></div></div>
+      <section class="cell">
+        <div class="cell-label">Box No.</div>
+        <form class="row" id="bxForm" autocomplete="off">
+          <input class="input mono" id="bxInput" placeholder="Box no." autocapitalize="characters" enterkeyhint="done">
+          <button type="button" class="btn btn-scan" id="bxScan">&#128247; Scan</button>
+        </form>
+        <div class="row" style="margin-top:8px"><button class="btn btn-ghost btn-sm" type="submit" form="bxForm" style="flex:1">+ Add typed box no.</button></div>
+      </section>
+      <div class="list-head"><h3>Boxes scanned</h3><span class="muted">Newest on top</span></div>
+      <div class="items" id="bxList"></div>
+      <div class="submit-bar"><button class="btn btn-black" id="bxSubmit">Submit box count</button></div>`);
+    bindBack();
+    $("#bxCancel").onclick = cancelBoxCount;
+    $("#bxScan").onclick = openBoxCamera;
+    $("#bxForm").onsubmit = async (e) => {
+      e.preventDefault();
+      const v = $("#bxInput").value.trim(); if (!v) return;
+      if (await addBox(v, true)) $("#bxInput").value = "";
+      const i = $("#bxInput"); if (i) i.focus();
+    };
+    $("#bxSubmit").onclick = submitBoxCount;
+    updateBoxes();
+  }
+
+  function boxStats() {
+    const file = new Set((boxDraft.fileCartons || []).map(upc));
+    const got = new Set(boxDraft.boxes.map((b) => upc(b.box_no)));
+    const inFile = [...got].filter((b) => file.has(b)).length;
+    const missing = (boxDraft.fileCartons || []).filter((c) => !got.has(upc(c)));
+    const extra = boxDraft.boxes.filter((b) => file.size && !file.has(upc(b.box_no)));
+    return { file, inFile, missing, extra, total: boxDraft.boxes.length };
+  }
+
+  function updateBoxes(newId) {
+    if (!$("#bxNum") || !boxDraft) return;
+    const st = boxStats();
+    $("#bxNum").textContent = st.total;
+    if (boxDraft.deliveryId) {
+      $("#bxSide").innerHTML = `<b>${st.inFile} / ${st.file.size}</b> in file<br>${st.missing.length ? `<span style="color:#b42318">${st.missing.length} missing</span>` : `<span style="color:#0d5c30">all received</span>`}` +
+        (st.extra.length ? `<br><span style="color:#8a6100">${st.extra.length} not in file</span>` : "");
+      $("#bxBar").style.width = (st.file.size ? Math.min(100, (st.inFile / st.file.size) * 100) : 0) + "%";
+    } else $("#bxSide").innerHTML = "";
+    $("#bxSubmit").disabled = !st.total;
+    $("#bxSubmit").textContent = st.total ? `Submit box count (${st.total} boxes)` : "Submit box count";
+    const list = $("#bxList");
+    if (!st.total) { list.innerHTML = `<div class="empty">No boxes yet. Press Scan and hold the SCAN button on each box label.</div>`; return; }
+    list.innerHTML = boxDraft.boxes.map((b, i) => ({ b, i })).reverse().map(({ b, i }) => `
+      <div class="item ${b.id === newId ? "new" : ""}" data-id="${b.id}">
+        <div class="item-no">${i + 1}</div>
+        <div class="item-main">
+          <div class="item-code">${esc(b.box_no)}${b.notInFile ? `<span class="dup">not in file</span>` : ""}</div>
+          <div class="item-meta">${fmtTime(b.t)}${b.manual ? " &middot; typed" : ""}</div>
+        </div>
+        <button class="del" title="Delete" aria-label="Delete">&#128465;</button>
+      </div>`).join("");
+    list.querySelectorAll(".del").forEach((x) => (x.onclick = () => deleteBox(x.closest(".item").dataset.id)));
+  }
+
+  async function renderBoxStart() {
+    shell(backBar("Receive Boxes") + `
+      <section class="cell">
+        <div class="cell-label">Start a box count</div>
+        <div class="field" style="margin-top:4px"><label>Delivery file</label>
+          <select class="input" id="bxFile"><option value="">Loading…</option></select>
+          <div class="hint">If the file is uploaded, the app shows how many boxes are missing.</div></div>
+        <div class="field"><label>Reference</label><input class="input" id="bxRef" placeholder="e.g. GTV 12345 / Shipment ${esc(fmtD(today()))}"></div>
+        <button class="btn btn-black" id="bxStart" style="width:100%;margin-top:16px;padding:15px">Start box count</button>
+      </section>
+      <div class="list-head" style="margin-top:22px"><h3>My recent box counts</h3></div>
+      <div class="items" id="bxRecent"><div class="empty">Loading…</div></div>`);
+    bindBack();
+    let files = [];
+    try {
+      files = await call("staff_list_deliveries");
+      $("#bxFile").innerHTML = `<option value="">No delivery file - plain count</option>` +
+        files.map((d) => `<option value="${d.id}">${esc(d.ref)}${d.delivery_date ? " - " + esc(fmtD(d.delivery_date)) : ""} (${num(d.cartons)} boxes)</option>`).join("");
+    } catch (e) { if ($("#bxFile")) $("#bxFile").innerHTML = `<option value="">No delivery file - plain count</option>`; }
+    if (!$("#bxFile")) return;
+    $("#bxFile").onchange = () => { const d = files.find((x) => x.id === $("#bxFile").value); if (d) $("#bxRef").value = d.ref; };
+    $("#bxStart").onclick = async () => {
+      const id = $("#bxFile").value, d = files.find((x) => x.id === id);
+      let ref = $("#bxRef").value.trim() || (d ? d.ref : "Shipment " + fmtD(today()));
+      let cartons = [];
+      if (d) {
+        const b = $("#bxStart"); b.disabled = true; b.innerHTML = `<span class="spinner"></span>`;
+        try { cartons = await call("staff_delivery_cartons", { p_delivery_id: d.id }); }
+        catch (e) { b.disabled = false; b.textContent = "Start box count"; return alertBox("Could not load the delivery file", e.message); }
+      }
+      boxDraft = { ref, deliveryId: d ? d.id : null, deliveryRef: d ? d.ref : null, fileCartons: cartons, startedAt: new Date().toISOString(), boxes: [] };
+      saveBoxDraft(); renderBoxes();
+    };
+    try {
+      const r = await call("staff_my_box_counts");
+      const el = $("#bxRecent"); if (!el) return;
+      el.innerHTML = r.length ? r.map((c) => `<div class="item"><div class="item-main"><div class="item-code">${esc(c.ref)}</div><div class="item-meta">${fmtDT(c.submitted_at)}</div></div><span class="pill k">${num(c.total_boxes)} boxes</span></div>`).join("")
+        : `<div class="empty">No box counts in the last 7 days.</div>`;
+    } catch (e) { const el = $("#bxRecent"); if (el) el.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  }
+
+  const camOpen = () => !$("#camera").classList.contains("hidden");
+  let boxBusy = false;
+  async function addBox(code, manual) {
+    code = String(code || "").trim();
+    if (!code || !boxDraft || boxBusy) return false;
+    const prev = boxDraft.boxes.findIndex((b) => upc(b.box_no) === upc(code));
+    if (prev >= 0) {
+      signal("err");
+      const msg = `Box ${code} already counted (#${prev + 1}) - not added`;
+      if (camOpen()) Scanner.showMsg("✗ " + msg, "warn"); else toast(msg);
+      return false;
+    }
+    let notInFile = false;
+    if (boxDraft.deliveryId && !boxDraft.fileCartons.some((c) => upc(c) === upc(code))) {
+      signal("warn"); boxBusy = true;
+      const ok = await modal(`<h2>&#9888; Box not in delivery file</h2>
+        <div class="warn-box">Box <b class="mono">${esc(code)}</b> is not in <b>${esc(boxDraft.deliveryRef)}</b>.</div>
+        <p>The label may have more than one barcode - check you scanned the <b>box number</b>.</p>
+        ${boxDraft.fileCartons.length ? `<p class="muted">Box numbers in the file look like:<br><b class="mono">${boxDraft.fileCartons.slice(0, 3).map(esc).join("<br>")}</b></p>` : ""}`,
+        [{ label: "Don't add", value: false }, { label: "Add anyway", cls: "btn-black", value: true }]);
+      boxBusy = false;
+      if (!ok) { if (camOpen()) Scanner.showMsg("Not added: " + code, "warn"); return false; }
+      notInFile = true;
+    }
+    const b = { id: newId(), box_no: code, t: new Date().toISOString() };
+    if (manual) b.manual = true;
+    if (notInFile) b.notInFile = true;
+    boxDraft.boxes.push(b); saveBoxDraft();
+    signal("ok"); updateBoxes(b.id);
+    if (camOpen()) { Scanner.showMsg(`✓ ${code} added`, "ok"); Scanner.setCount(boxDraft.boxes.length); }
+    return true;
+  }
+
+  function openBoxCamera() {
+    if (!boxDraft) return;
+    Scanner.setCount(boxDraft.boxes.length);
+    Scanner.onClose = () => updateBoxes();
+    Scanner.open({ title: "Scan boxes", sub: boxDraft.ref + " - scan each box label once", showCount: true, countLabel: "boxes", onCode: (c) => addBox(c, false) });
+  }
+
+  function deleteBox(id) {
+    const i = boxDraft.boxes.findIndex((b) => b.id === id); if (i < 0) return;
+    const [removed] = boxDraft.boxes.splice(i, 1); saveBoxDraft(); updateBoxes();
+    toast(`Deleted box ${removed.box_no}`, "UNDO", () => { boxDraft.boxes.splice(i, 0, removed); saveBoxDraft(); updateBoxes(); }, 5000);
+  }
+
+  async function cancelBoxCount() {
+    if (boxDraft.boxes.length) {
+      const ok = await modal(`<h2>Cancel this box count?</h2><p>All <b>${boxDraft.boxes.length}</b> scanned boxes for <b>${esc(boxDraft.ref)}</b> will be deleted. Nothing has been submitted.</p>`,
+        [{ label: "Keep counting", value: false }, { label: "Cancel count", cls: "btn-red", value: true }]);
+      if (!ok) return;
+    }
+    boxDraft = null; saveBoxDraft(); renderBoxes();
+  }
+
+  async function submitBoxCount() {
+    const st = boxStats(); if (!st.total) return;
+    const missHtml = boxDraft.deliveryId ? (st.missing.length
+      ? `<div class="err-box"><b>${st.missing.length} box${st.missing.length === 1 ? "" : "es"} missing</b> from the delivery file:<br><span class="mono">${st.missing.slice(0, 15).map(esc).join(", ")}${st.missing.length > 15 ? " …" : ""}</span></div>`
+      : `<div class="ok-box">All ${st.file.size} boxes in the delivery file are received.</div>`) +
+      (st.extra.length ? `<div class="warn-box">${st.extra.length} box${st.extra.length === 1 ? "" : "es"} not in the delivery file.</div>` : "") : "";
+    const ok = await modal(`
+      <h2>Confirm box count</h2><p>${esc(boxDraft.ref)}</p>
+      <div class="big-total">${st.total}</div>
+      <div class="big-total-sub">boxes scanned</div>
+      ${missHtml}
+      <div class="warn-box">Does <b>${st.total} boxes</b> match the boxes physically received?</div>`,
+      [{ label: "No, go back", value: false }, { label: "Yes, submit", cls: "btn-green", value: true }]);
+    if (!ok) return;
+    const btn = $("#bxSubmit"); btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Submitting…`;
+    try {
+      const r = await call("staff_submit_box_count", { p_ref: boxDraft.ref, p_delivery_id: boxDraft.deliveryId, p_started_at: boxDraft.startedAt,
+        p_boxes: boxDraft.boxes.map((b) => ({ box_no: b.box_no, scanned_at: b.t })) });
+      const ref = boxDraft.ref;
+      boxDraft = null; saveBoxDraft(); signal("ok");
+      renderBoxes();
+      modal(`<h2>&#10003; Submitted</h2><div class="ok-box">Box count <b>${esc(ref)}</b> saved with <b>${num(r.total_boxes)} boxes</b>.</div>`, [{ label: "OK", cls: "btn-black", value: true }]);
+    } catch (e) {
+      updateBoxes();
+      if (e.code !== "SESSION_EXPIRED") { signal("err"); alertBox("Not submitted", e.message + " Your scans are still saved on this phone - try again."); }
+    }
+  }
+
+  // ================================================================ ADMIN: box counts
+  let bFrom = today(-7), bTo = today();
+  function renderBoxCounts() {
+    shell(`
+      <div class="card">
+        <div class="grid2">
+          <div class="field" style="margin-top:0"><label>From</label><input class="input" type="date" id="bFrom" value="${bFrom}"></div>
+          <div class="field" style="margin-top:0"><label>To</label><input class="input" type="date" id="bTo" value="${bTo}"></div>
+        </div>
+        <div class="row" style="margin-top:12px"><button class="btn btn-black" id="bLoad">Show</button></div>
+      </div>
+      <div class="card"><h3>Box counts</h3><div id="bList"><span class="spinner"></span></div></div>`, { wide: true });
+    $("#bLoad").onclick = () => { bFrom = $("#bFrom").value; bTo = $("#bTo").value; loadBoxCounts(); };
+    loadBoxCounts();
+  }
+
+  async function loadBoxCounts() {
+    const el = $("#bList"); el.innerHTML = `<span class="spinner"></span>`;
+    try {
+      const r = await call("admin_list_box_counts", { p_from: bFrom || null, p_to: bTo || null });
+      if (!r.length) { el.innerHTML = `<div class="empty">No box counts in this period.</div>`; return; }
+      el.innerHTML = `<div class="tbl-scroll"><table class="tbl"><thead><tr><th>Reference</th><th>Delivery file</th><th>Staff</th><th>Submitted</th><th>Boxes</th><th></th></tr></thead><tbody>
+        ${r.map((b) => {
+          const all = b.has_file && b.received_in_file >= b.file_cartons;
+          return `<tr><td><b>${esc(b.ref)}</b></td>
+          <td>${b.has_file ? `<span class="pill ${all ? "g" : "r"}">${esc(b.delivery_ref || "")}: ${num(b.received_in_file)} / ${num(b.file_cartons)}</span>` : `<span class="pill k">No file</span>`}</td>
+          <td>${esc(b.staff_name)}</td><td>${fmtDT(b.submitted_at)}</td><td><b>${num(b.total_boxes)} boxes</b></td>
+          <td><div class="actions"><button class="btn btn-black btn-sm" data-xl="${b.id}">&#8681; Excel</button><button class="btn btn-ghost btn-sm" data-del="${b.id}" data-r="${esc(b.ref)}">Delete</button></div></td></tr>`;
+        }).join("")}</tbody></table></div>`;
+      el.querySelectorAll("[data-xl]").forEach((x) => (x.onclick = async () => {
+        const old = x.innerHTML; x.disabled = true; x.innerHTML = `<span class="spinner"></span>`;
+        try { const s2 = await XL.downloadBoxReport(await call("admin_export_box_count", { p_id: x.dataset.xl }));
+              toast(s2.hasFile ? `Report ready: ${s2.received} received, ${s2.missing} missing, ${s2.extra} extra` : `Report ready: ${s2.total} boxes`, null, null, 5000); }
+        catch (e) { alertBox("Report failed", e.message); }
+        x.disabled = false; x.innerHTML = old;
+      }));
+      el.querySelectorAll("[data-del]").forEach((x) => (x.onclick = async () => {
+        const ok = await modal(`<h2>Delete box count?</h2><p><b>${esc(x.dataset.r)}</b> will be deleted.</p>`, [{ label: "Cancel", value: false }, { label: "Delete", cls: "btn-red", value: true }]);
+        if (!ok) return;
+        try { await call("admin_delete_box_count", { p_id: x.dataset.del }); loadBoxCounts(); } catch (e) { alertBox("Error", e.message); }
+      }));
+    } catch (e) { el.innerHTML = `<div class="err-box">${esc(e.message)}</div>`; }
+  }
+
   // ================================================================ ADMIN: delivery files
   let pendingUpload = null;
   async function renderDeliveries() {
@@ -521,7 +832,7 @@
         b.innerHTML = `<span class="spinner"></span> Uploading ${Math.min(i + size, L.length)} / ${L.length}`;
         await call("admin_add_delivery_lines", { p_delivery_id: id, p_lines: L.slice(i, i + size) });
       }
-      toast(`Uploaded ${ref}: ${num(L.length)} pcs`);
+      toast(`Uploaded ${ref}: ${num(pendingUpload.total)} pcs in ${num(pendingUpload.cartons)} cartons`);
       pendingUpload = null; renderDeliveries();
     } catch (e) {
       if (id) call("admin_delete_delivery", { p_id: id }).catch(() => {});
@@ -684,7 +995,7 @@
 
   // ================================================================ router
   function routeAdmin() {
-    ({ receive: renderReceive, deliveries: renderDeliveries, cartons: renderCartons, staff: renderStaff }[adminTab] || renderReceive)();
+    ({ receive: renderReceive, deliveries: renderDeliveries, cartons: renderCartons, boxes: renderBoxCounts, staff: renderStaff }[adminTab] || renderReceive)();
   }
 
   async function start() {
@@ -708,7 +1019,8 @@
   }
 
   // exposed for automated tests only
-  window.__ccr = { addItem: (c) => addItem(c, false), setCarton, hit: (c) => Scanner.hit(c) };
+  window.__ccr = { addItem: (c) => addItem(c, false), setCarton, press: (c) => { Scanner.armed = true; Scanner.got = false; Scanner.hit(c); },
+                   hit: (c) => Scanner.hit(c), addBox: (c) => addBox(c, false) };
 
   start();
 })();

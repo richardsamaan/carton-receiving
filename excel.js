@@ -307,5 +307,91 @@
     await download(wb, "Delivery_File_Template.xlsx");
   }
 
-  window.XL = { readDeliveryFile, buildDeliveryReport, downloadDeliveryReport, downloadScans, downloadTemplate };
+  // ---------- box count report ----------
+  async function buildBoxReport(data) {
+    const ExcelJS = await waitLib();
+    const wb = new ExcelJS.Workbook();
+    wb.creator = "Carton Receiving"; wb.created = new Date();
+    const c = data.count, boxes = data.boxes || [], file = c.has_file ? (data.file_cartons || []) : [];
+    const fileSet = new Set(file.map(up)), gotSet = new Set(boxes.map((b) => up(b.box_no)));
+    const nB = Math.max(2, boxes.length + 1), nF = Math.max(2, file.length + 1);
+    const BA = `'Boxes Received'!$A$2:$A$${nB}`, FA = `Summary!$A$2:$A$${nF}`;
+
+    // Sheet 1: boxes received
+    const ws = wb.addWorksheet("Boxes Received");
+    header(ws, [["Box No", 26], ["Staff Name", 22], ["Scan Time", 21], ["In Delivery File", 16]]);
+    boxes.forEach((b, i) => {
+      const r = i + 2;
+      text(ws, "A" + r, b.box_no);
+      ws.getCell("B" + r).value = c.staff_name;
+      const t = ws.getCell("C" + r); t.value = localDate(b.scanned_at); t.numFmt = "dd-mmm-yyyy hh:mm:ss";
+      const d = ws.getCell("D" + r);
+      if (c.has_file) {
+        const yes = fileSet.has(up(b.box_no));
+        d.value = { formula: `IF(SUMPRODUCT(--(${FA}=A${r}))>0,"Yes","No")`, result: yes ? "Yes" : "No" };
+        d.fill = yes ? GREEN_FILL : AMBER_FILL; d.font = yes ? GREEN_FONT : AMBER_FONT;
+      } else d.value = "No file";
+    });
+    const tb = boxes.length + 3;
+    ws.getCell("A" + tb).value = "Total boxes"; ws.getCell("A" + tb).font = { bold: true };
+    ws.getCell("B" + tb).value = { formula: `COUNTA(A2:A${nB})`, result: boxes.length }; ws.getCell("B" + tb).font = { bold: true };
+    if (boxes.length) ws.autoFilter = { from: "A1", to: "D" + (boxes.length + 1) };
+
+    // Sheet 2: summary
+    const sm = wb.addWorksheet("Summary");
+    let received = 0, missing = 0;
+    const extra = boxes.filter((b) => c.has_file && !fileSet.has(up(b.box_no)));
+    if (c.has_file) {
+      header(sm, [["Carton No (delivery file)", 26], ["Status", 12], ["", 3], ["Extra boxes (not in file)", 26], ["Status", 12], ["", 3], ["", 24], ["", 16]]);
+      file.forEach((cn, i) => {
+        const r = i + 2, got = gotSet.has(up(cn));
+        text(sm, "A" + r, cn);
+        const st = sm.getCell("B" + r);
+        st.value = { formula: `IF(SUMPRODUCT(--(${BA}=A${r}))>0,"Received","Missing")`, result: got ? "Received" : "Missing" };
+        st.fill = got ? GREEN_FILL : RED_FILL; st.font = got ? GREEN_FONT : RED_FONT;
+        if (got) received++; else missing++;
+      });
+      extra.forEach((b, i) => {
+        const r = i + 2;
+        text(sm, "D" + r, b.box_no);
+        const st = sm.getCell("E" + r); st.value = "Extra"; st.fill = GREEN_FILL; st.font = GREEN_FONT;
+      });
+      ["C1", "F1", "G1", "H1"].forEach((x) => { sm.getCell(x).fill = FILL("FFFFFFFF"); });
+    } else {
+      sm.getColumn(1).width = 24; sm.getColumn(2).width = 26;
+    }
+    const K = c.has_file ? "G" : "A", V = c.has_file ? "H" : "B";
+    const nE = Math.max(2, extra.length + 1);
+    const info = [
+      ["Reference", c.ref],
+      ["Delivery file", c.has_file ? (c.delivery_ref || "") : "No file (plain count)"],
+      ["Counted by", c.staff_name],
+      ["Submitted", localDate(c.submitted_at)],
+      ["Total boxes scanned", { formula: `COUNTA(${BA})`, result: boxes.length }]
+    ];
+    if (c.has_file) info.push(
+      ["Boxes in delivery file", { formula: `COUNTA(A2:A${nF})`, result: file.length }],
+      ["Received", { formula: `COUNTIF(B2:B${nF},"Received")`, result: received }],
+      ["Missing", { formula: `COUNTIF(B2:B${nF},"Missing")`, result: missing }],
+      ["Extra (not in file)", { formula: `COUNTA(D2:D${nE})`, result: extra.length }]);
+    info.forEach(([k, v], i) => {
+      const r = i + 2;
+      const kc = sm.getCell(K + (c.has_file ? r : r - 1)); kc.value = k; kc.font = { bold: true };
+      const vc = sm.getCell(V + (c.has_file ? r : r - 1)); vc.value = v;
+      if (v instanceof Date) vc.numFmt = "dd-mmm-yyyy hh:mm";
+      if (k === "Missing") { vc.fill = missing ? RED_FILL : GREEN_FILL; vc.font = missing ? RED_FONT : GREEN_FONT; }
+      if (k === "Received") { vc.fill = GREEN_FILL; vc.font = GREEN_FONT; }
+      if (k === "Extra (not in file)" && extra.length) { vc.fill = GREEN_FILL; vc.font = GREEN_FONT; }
+    });
+    if (c.has_file) sm.views = [{ state: "frozen", ySplit: 1 }];
+    return { wb, summary: { hasFile: !!c.has_file, total: boxes.length, received, missing, extra: extra.length } };
+  }
+
+  async function downloadBoxReport(data) {
+    const { wb, summary } = await buildBoxReport(data);
+    await download(wb, `Boxes_${safe(data.count.ref)}_${stamp()}.xlsx`);
+    return summary;
+  }
+
+  window.XL = { readDeliveryFile, buildDeliveryReport, downloadDeliveryReport, downloadScans, downloadTemplate, buildBoxReport, downloadBoxReport };
 })();

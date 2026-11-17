@@ -16,7 +16,8 @@
     PIN_TOO_SHORT: "PIN / password must be at least 4 characters.",
     USERNAME_TAKEN: "This username is already used.",
     CANNOT_DEMOTE_SELF: "You cannot disable or remove admin from your own account.",
-    NOT_FOUND: "Not found."
+    NOT_FOUND: "Not found.",
+    NO_BOXES: "No boxes scanned."
   };
 
   class ApiError extends Error {
@@ -57,13 +58,14 @@
     let db = null;
     try { db = JSON.parse(localStorage.getItem(KEY)); } catch (e) {}
     if (!db) {
-      db = { users: [], sessions: {}, deliveries: [], lines: [], cartons: [], scans: [] };
+      db = { users: [], sessions: {}, deliveries: [], lines: [], cartons: [], scans: [], boxCounts: [], boxScans: [] };
       db.users.push({ id: uid(), username: "admin", full_name: "Admin (demo)", pin: "1234", role: "admin", active: true });
       db.users.push({ id: uid(), username: "staff", full_name: "Staff (demo)", pin: "1111", role: "staff", active: true });
       save(db);
     }
-    return db;
+    return fix(db);
   }
+  function fix(db) { db.boxCounts = db.boxCounts || []; db.boxScans = db.boxScans || []; return db; }
   function save(db) { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) {} }
   function uid() { return (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()); }
   const up = (s) => String(s || "").trim().toUpperCase();
@@ -133,6 +135,52 @@
       return db.cartons.filter((c) => c.user_id === u.id && Date.now() - new Date(c.submitted_at) < 2 * DAY)
         .sort((a, b) => b.submitted_at.localeCompare(a.submitted_at)).slice(0, 50)
         .map((c) => ({ carton_no: c.carton_no, total_qty: c.total_qty, submitted_at: c.submitted_at }));
+    },
+    staff_list_deliveries({ p_token }) {
+      const db = load(); auth(db, p_token);
+      return db.deliveries.slice().sort((a, b) => b.uploaded_at.localeCompare(a.uploaded_at)).slice(0, 30)
+        .map((d) => ({ id: d.id, ref: d.ref, delivery_date: d.delivery_date, cartons: new Set(db.lines.filter((l) => l.delivery_id === d.id).map((l) => up(l.carton_no))).size }));
+    },
+    staff_delivery_cartons({ p_token, p_delivery_id }) {
+      const db = load(); auth(db, p_token);
+      const seen = new Set(), out = [];
+      db.lines.filter((l) => l.delivery_id === p_delivery_id).forEach((l) => { if (!seen.has(up(l.carton_no))) { seen.add(up(l.carton_no)); out.push(l.carton_no); } });
+      return out;
+    },
+    staff_submit_box_count({ p_token, p_ref, p_delivery_id, p_started_at, p_boxes }) {
+      const db = load(); const u = auth(db, p_token);
+      if (!p_boxes.length) throw new ApiError("NO_BOXES");
+      const d = p_delivery_id && db.deliveries.find((x) => x.id === p_delivery_id);
+      const id = uid();
+      db.boxCounts.push({ id, ref: (p_ref || "").trim() || (d && d.ref) || "Box count", delivery_id: d ? d.id : null, delivery_ref: d ? d.ref : null,
+        user_id: u.id, staff_name: u.full_name, started_at: p_started_at, submitted_at: new Date().toISOString(), total_boxes: p_boxes.length });
+      p_boxes.forEach((b) => db.boxScans.push({ box_count_id: id, box_no: String(b.box_no).trim(), scanned_at: b.scanned_at }));
+      save(db); return { id, total_boxes: p_boxes.length };
+    },
+    staff_my_box_counts({ p_token }) {
+      const db = load(); const u = auth(db, p_token);
+      return db.boxCounts.filter((b) => b.user_id === u.id).sort((a, b) => b.submitted_at.localeCompare(a.submitted_at)).slice(0, 30)
+        .map((b) => ({ ref: b.ref, total_boxes: b.total_boxes, submitted_at: b.submitted_at }));
+    },
+    admin_list_box_counts({ p_token, p_from, p_to }) {
+      const db = load(); auth(db, p_token, true);
+      return db.boxCounts.filter((b) => inRange(b.submitted_at, p_from, p_to)).sort((a, b) => b.submitted_at.localeCompare(a.submitted_at)).map((b) => {
+        const fc = new Set(db.lines.filter((l) => l.delivery_id === b.delivery_id).map((l) => up(l.carton_no)));
+        const got = new Set(db.boxScans.filter((s) => s.box_count_id === b.id && fc.has(up(s.box_no))).map((s) => up(s.box_no)));
+        return { id: b.id, ref: b.ref, delivery_ref: b.delivery_ref, has_file: !!b.delivery_id, staff_name: b.staff_name, submitted_at: b.submitted_at, total_boxes: b.total_boxes, file_cartons: fc.size, received_in_file: got.size };
+      });
+    },
+    admin_export_box_count({ p_token, p_id }) {
+      const db = load(); auth(db, p_token, true);
+      const b = db.boxCounts.find((x) => x.id === p_id); if (!b) throw new ApiError("NOT_FOUND");
+      const seen = new Set(), cartons = [];
+      db.lines.filter((l) => l.delivery_id === b.delivery_id).forEach((l) => { if (!seen.has(up(l.carton_no))) { seen.add(up(l.carton_no)); cartons.push(l.carton_no); } });
+      return { count: Object.assign({ has_file: !!b.delivery_id }, b), boxes: db.boxScans.filter((s) => s.box_count_id === b.id).map((s) => ({ box_no: s.box_no, scanned_at: s.scanned_at })), file_cartons: cartons };
+    },
+    admin_delete_box_count({ p_token, p_id }) {
+      const db = load(); auth(db, p_token, true);
+      db.boxCounts = db.boxCounts.filter((b) => b.id !== p_id); db.boxScans = db.boxScans.filter((s) => s.box_count_id !== p_id);
+      save(db); return { ok: true };
     },
     admin_list_users({ p_token }) { const db = load(); auth(db, p_token, true); return db.users.map(pub); },
     admin_save_user({ p_token, p_id, p_username, p_full_name, p_pin, p_role, p_active }) {

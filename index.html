@@ -12,7 +12,7 @@
   <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="icon-192.png">
   <link rel="icon" href="icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=1">
+  <link rel="stylesheet" href="styles.css?v=4">
 </head>
 <body>
   <div id="app"></div>
@@ -34,7 +34,8 @@
     <div id="reader"></div>
     <div class="cam-last" id="camLast">&nbsp;</div>
     <div class="cam-bottom">
-      <div class="cam-count"><span id="camCount">0</span><small>pcs in carton</small></div>
+      <div class="cam-count"><span id="camCount">0</span><small id="camCountLabel">pcs in carton</small></div>
+      <button class="cam-hold" id="camHold" type="button">HOLD TO<br>SCAN</button>
       <button class="btn btn-white" id="camDone">Done</button>
     </div>
   </div>
@@ -42,8 +43,8 @@
   <script src="config.js?v=1"></script>
   <script src="html5-qrcode.min.js"></script>
   <script src="exceljs.min.js" defer></script>
-  <script src="api.js?v=2"></script>
-  <script src="excel.js?v=3"></script>
-  <script src="app.js?v=3"></script>
+  <script src="api.js?v=4"></script>
+  <script src="excel.js?v=4"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>
