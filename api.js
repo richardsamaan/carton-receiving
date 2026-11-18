@@ -113,9 +113,10 @@
       const examples = latest ? [...new Set(db.lines.filter((l) => l.delivery_id === latest.id).map((l) => l.carton_no))].sort().slice(0, 3) : [];
       const ids = new Set(recent.map((d) => d.id));
       const known = [...new Set(db.lines.filter((l) => ids.has(l.delivery_id)).map((l) => up(l.carton_no)))];
-      return { previous: prev, delivery_ref: hit ? hit.ref : null, recent_files: recent.length, examples, known_cartons: known };
+      const boxQty = hit ? db.lines.filter((l) => l.delivery_id === hit.id && up(l.carton_no) === up(p_carton)).reduce((a, l) => a + (Number(l.qty) || 1), 0) : null;
+      return { previous: prev, delivery_ref: hit ? hit.ref : null, box_qty: boxQty, recent_files: recent.length, examples, known_cartons: known };
     },
-    staff_submit_carton({ p_token, p_carton, p_started_at, p_lines, p_replace }) {
+    staff_submit_carton({ p_token, p_carton, p_started_at, p_lines, p_replace, p_note }) {
       const db = load(); const u = auth(db, p_token);
       if (!String(p_carton || "").trim()) throw new ApiError("NO_CARTON");
       if (!p_lines.length) throw new ApiError("NO_ITEMS");
@@ -125,7 +126,7 @@
         db.scans = db.scans.filter((s) => !ids.includes(s.carton_scan_id));
       }
       const id = uid();
-      db.cartons.push({ id, carton_no: String(p_carton).trim(), user_id: u.id, staff_name: u.full_name, started_at: p_started_at, submitted_at: new Date().toISOString(), total_qty: p_lines.length });
+      db.cartons.push({ id, carton_no: String(p_carton).trim(), user_id: u.id, staff_name: u.full_name, started_at: p_started_at, submitted_at: new Date().toISOString(), total_qty: p_lines.length, note: (p_note || "").trim() || null });
       p_lines.forEach((l) => db.scans.push({ carton_scan_id: id, barcode: String(l.barcode).trim(), scanned_at: l.scanned_at }));
       save(db);
       return { id, total_qty: p_lines.length };
@@ -234,7 +235,7 @@
         .sort((a, b) => b.submitted_at.localeCompare(a.submitted_at)).map((c) => {
           const l = db.lines.find((x) => up(x.carton_no) === up(c.carton_no));
           const d = l && db.deliveries.find((x) => x.id === l.delivery_id);
-          return { id: c.id, carton_no: c.carton_no, staff_name: c.staff_name, submitted_at: c.submitted_at, total_qty: c.total_qty, delivery_ref: d ? d.ref : null };
+          return { id: c.id, carton_no: c.carton_no, staff_name: c.staff_name, submitted_at: c.submitted_at, total_qty: c.total_qty, note: c.note || null, delivery_ref: d ? d.ref : null };
         });
     },
     admin_delete_carton_scan({ p_token, p_id }) {
@@ -252,7 +253,18 @@
       const cs = db.cartons.filter((c) => set.has(up(c.carton_no)) && inWindow(c, d));
       const all = new Set(db.lines.map((l) => up(l.carton_no))), b = baseDate(d);
       const extra = db.cartons.filter((c) => !all.has(up(c.carton_no)) && new Date(c.submitted_at) >= b - 3 * DAY && new Date(c.submitted_at) <= b + 15 * DAY);
-      return { delivery: d, lines, scans: demoScans(db, cs), extra_scans: demoScans(db, extra) };
+      const fileSet = new Set(lines.map((l) => up(l.carton_no)));
+      const boxes = [];
+      db.boxScans.forEach((s) => {
+        const bc = db.boxCounts.find((x) => x.id === s.box_count_id); if (!bc) return;
+        const t = new Date(bc.submitted_at).getTime();
+        const inThis = fileSet.has(up(s.box_no)), inAny = all.has(up(s.box_no));
+        const ok = (inThis && t >= b - 14 * DAY && t <= b + 60 * DAY) ||
+                   (!inAny && (bc.delivery_id === d.id || (!bc.delivery_id && t >= b - 3 * DAY && t <= b + 15 * DAY)));
+        if (ok) boxes.push({ box_no: s.box_no, staff_name: bc.staff_name, scanned_at: s.scanned_at, in_file: inThis });
+      });
+      boxes.sort((x, y) => x.scanned_at.localeCompare(y.scanned_at));
+      return { delivery: d, lines, scans: demoScans(db, cs), extra_scans: demoScans(db, extra), boxes };
     },
     admin_export_scans({ p_token, p_from, p_to }) {
       const db = load(); auth(db, p_token, true);
@@ -262,7 +274,7 @@
   function demoScans(db, cartons) {
     const out = [];
     cartons.forEach((c) => db.scans.filter((s) => s.carton_scan_id === c.id)
-      .forEach((s) => out.push({ carton_no: c.carton_no, barcode: s.barcode, staff_name: c.staff_name, scanned_at: s.scanned_at, submitted_at: c.submitted_at })));
+      .forEach((s) => out.push({ carton_no: c.carton_no, barcode: s.barcode, staff_name: c.staff_name, scanned_at: s.scanned_at, submitted_at: c.submitted_at, note: c.note || null })));
     return out.sort((a, b) => a.carton_no.localeCompare(b.carton_no) || a.scanned_at.localeCompare(b.scanned_at));
   }
 

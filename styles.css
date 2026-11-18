@@ -175,3 +175,15 @@ button,input,select{font:inherit}
 .home-card .pill{align-self:flex-start; margin-top:4px}
 .progress{height:10px; background:#e7e7e7; border-radius:10px; overflow:hidden; margin:-2px 0 10px}
 .progress div{height:100%; width:0; background:var(--green); transition:width .3s}
+
+/* box qty reference on stock screen */
+.boxqty{font-size:14px; color:#333}
+.boxqty b{font-size:18px; color:#000}
+.bq{display:inline-block; margin-top:4px; border-radius:8px; padding:3px 9px; font-weight:800; font-size:14px}
+.bq.left{background:var(--amber-soft); color:#8a6100}
+.bq.ok{background:var(--green-soft); color:#0d5c30}
+.bq.over{background:var(--red-soft); color:#b42318}
+
+/* carton note */
+.note-box{margin-top:8px; background:#f5f5f3; border-left:3px solid #000; border-radius:6px; padding:7px 10px; font-size:14px; word-break:break-word}
+.note-input{width:100%; min-height:90px; resize:vertical; font-size:16px; margin-top:6px}

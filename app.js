@@ -93,7 +93,7 @@
   // ================================================================ camera scanner
   const Scanner = {
     inst: null, onCode: null, last: { code: "", t: 0 }, anyT: 0, torch: false,
-    async open({ title, sub, onCode, showCount, countLabel }) {
+    async open({ title, sub, onCode, showCount, countLabel, itemsOnly }) {
       this.onCode = onCode; this.armed = false; this.got = false;
       $("#camTitle").textContent = title; $("#camSub").textContent = sub || "";
       $("#camLast").textContent = " "; $("#camLast").className = "cam-last";
@@ -104,12 +104,18 @@
       try {
         if (!window.Html5Qrcode) throw new Error("Scanner library not loaded");
         const F = window.Html5QrcodeSupportedFormats;
-        if (!this.inst) {
+        // items: normal product barcodes only (QR / square codes on the tag are ignored)
+        // cartons & boxes: every barcode type
+        const kind = itemsOnly ? "items" : "labels";
+        if (!this.inst || this.kind !== kind) {
+          if (this.inst) { try { this.inst.clear(); } catch (x) {} }
           this.inst = new Html5Qrcode("reader", {
             verbose: false,
             useBarCodeDetectorIfSupported: true,
-            formatsToSupport: [F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.CODE_128, F.CODE_39, F.CODE_93, F.ITF, F.CODABAR, F.QR_CODE, F.DATA_MATRIX]
+            formatsToSupport: itemsOnly ? [F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E]
+              : [F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.CODE_128, F.CODE_39, F.CODE_93, F.ITF, F.CODABAR, F.QR_CODE, F.DATA_MATRIX]
           });
+          this.kind = kind;
         }
         await this.inst.start(
           { facingMode: "environment" },
@@ -346,7 +352,10 @@
         (draft.deliveryRef ? `<div class="hint" style="color:#0d5c30;font-weight:600">&#10003; In delivery file: ${esc(draft.deliveryRef)}</div>` : "") +
         (draft.notInFile ? `<div class="hint" style="color:#b42318;font-weight:600">&#9888; Not in any delivery file (you chose to continue)</div>` : "") +
         (draft.noFiles ? `<div class="hint">No delivery file uploaded yet - carton not checked.</div>` : "") +
-        (draft.replace ? `<div class="hint" style="color:#8a6100">&#9888; Re-scan: this will replace the earlier scan of this carton.</div>` : "");
+        (draft.replace ? `<div class="hint" style="color:#8a6100">&#9888; Re-scan: this will replace the earlier scan of this carton.</div>` : "") +
+        (draft.note ? `<div class="note-box"><b>Note:</b> ${esc(draft.note)} <button class="link" id="noteEdit">Edit</button></div>`
+                    : `<button class="btn btn-ghost btn-sm" id="noteEdit" style="margin-top:8px">+ Add note</button>`);
+      $("#noteEdit").onclick = editNote;
       $("#cartonTools").innerHTML = `<button class="link" id="cartonClear">${draft.scans.length ? "Clear carton" : "Change"}</button>`;
       $("#cartonClear").onclick = clearCarton;
     } else {
@@ -367,7 +376,14 @@
     const n = draft.scans.length;
     $("#qtyNum").textContent = n;
     const distinct = new Set(draft.scans.map((s) => s.barcode)).size;
-    $("#qtySide").innerHTML = n ? `${distinct} different<br>barcode${distinct === 1 ? "" : "s"}` : "";
+    let side = "";
+    if (has && draft.boxQty != null) {
+      const d = n - draft.boxQty;
+      side = `<div class="boxqty">Box qty: <b>${num(draft.boxQty)}</b></div>` +
+        (d < 0 ? `<div class="bq left">${num(-d)} left</div>` : d === 0 ? `<div class="bq ok">&#10003; Complete</div>` : `<div class="bq over">${num(d)} over</div>`);
+    } else if (has) side = `<div class="boxqty">Box qty: <b>&ndash;</b></div>`;
+    if (n) side += `<div class="muted" style="margin-top:4px">${distinct} different barcode${distinct === 1 ? "" : "s"}</div>`;
+    $("#qtySide").innerHTML = side;
     $("#submitBtn").disabled = !has || !n;
     $("#submitBtn").textContent = n ? `Submit carton (${n} pcs)` : "Submit carton";
     renderItems();
@@ -436,10 +452,25 @@
     draft = {
       carton: code, startedAt: new Date().toISOString(), replace, scans: [],
       deliveryRef: info ? info.delivery_ref : null, notInFile,
+      boxQty: info && info.box_qty != null ? Number(info.box_qty) : null,
       noFiles: !!info && !info.recent_files, known: [...knownCartons]
     };
     saveDraft(); updateReceive();
     setTimeout(() => { const i = $("#itemInput"); if (i && !("ontouchstart" in window)) i.focus(); }, 50);
+  }
+
+  async function editNote() {
+    const m = $("#modal"), c = $("#modalCard");
+    $("#toast").classList.add("hidden");
+    c.innerHTML = `<h2>Note for carton <span class="mono">${esc(draft.carton)}</span></h2>
+      <textarea class="input note-input" id="noteText" maxlength="500" placeholder="e.g. Box damaged, box opened, wet, wrong label…">${esc(draft.note || "")}</textarea>
+      <div class="modal-actions">${draft.note ? `<button class="btn btn-ghost" id="noteDel">Remove</button>` : `<button class="btn btn-ghost" id="noteCancel">Cancel</button>`}<button class="btn btn-black" id="noteSave">Save note</button></div>`;
+    m.classList.remove("hidden"); m.onclick = null;
+    setTimeout(() => $("#noteText").focus(), 50);
+    const done = (val) => { m.classList.add("hidden"); if (val !== undefined) { draft.note = val; saveDraft(); updateReceive(); } };
+    $("#noteSave").onclick = () => done($("#noteText").value.trim());
+    if ($("#noteDel")) $("#noteDel").onclick = () => done("");
+    if ($("#noteCancel")) $("#noteCancel").onclick = () => done();
   }
 
   async function clearCarton() {
@@ -451,8 +482,23 @@
     resetDraft(); updateReceive();
   }
 
-  function addItem(code, manual) {
+  // A long code ending in a valid 13-digit barcode (e.g. the QR code on the BOSS tag)
+  // is reduced to that barcode.
+  function ean13ok(d) {
+    let sum = 0;
+    for (let i = 0; i < 12; i++) sum += Number(d[i]) * (i % 2 ? 3 : 1);
+    return (10 - (sum % 10)) % 10 === Number(d[12]);
+  }
+  function cleanItem(code) {
     code = String(code || "").trim();
+    if (code.length > 13) { const m = code.match(/(\d{13})$/); if (m && ean13ok(m[1])) return m[1]; }
+    return code;
+  }
+
+  function addItem(code, manual) {
+    const raw = String(code || "").trim();
+    code = cleanItem(raw);
+    const fromLong = code !== raw;
     if (!code || !draft.carton) return false;
     if (code.toUpperCase() === draft.carton.toUpperCase() || knownCartons.has(code.toUpperCase())) {
       signal("warn");
@@ -467,7 +513,9 @@
     updateReceive(); renderItems(s.id);
     if (!$("#camera").classList.contains("hidden")) {
       const c = draft.scans.filter((x) => x.barcode === code).length;
-      Scanner.showLast(code, "ok", c > 1 ? `(x${c})` : ""); Scanner.setCount(draft.scans.length);
+      Scanner.showLast(code, "ok", (c > 1 ? `(x${c})` : "") + (fromLong ? " (barcode taken from long code)" : "")); Scanner.setCount(draft.scans.length);
+    } else if (fromLong) {
+      toast("Long code detected - saved as barcode " + code);
     }
     return true;
   }
@@ -483,7 +531,7 @@
     if (!draft.carton) return;
     Scanner.setCount(draft.scans.length);
     Scanner.onClose = () => updateReceive();
-    Scanner.open({ title: "Scan items", sub: "Carton " + draft.carton + " - scan every piece", showCount: true, onCode: (c) => addItem(c, false) });
+    Scanner.open({ title: "Scan items", sub: "Carton " + draft.carton + " - scan the BARCODE (lines), not the square code", showCount: true, itemsOnly: true, onCode: (c) => addItem(c, false) });
   }
 
   function deleteItem(id) {
@@ -502,14 +550,20 @@
       <p>Carton <b class="mono">${esc(draft.carton)}</b></p>
       <div class="big-total">${n}</div>
       <div class="big-total-sub">pieces scanned &middot; ${distinct} different barcode${distinct === 1 ? "" : "s"}</div>
+      ${draft.boxQty != null ? (n === draft.boxQty
+        ? `<div class="ok-box">&#10003; Matches the box qty in the delivery file (${num(draft.boxQty)} pcs).</div>`
+        : `<div class="err-box"><b>Scanned ${num(n)}, box qty ${num(draft.boxQty)}: ${n < draft.boxQty ? num(draft.boxQty - n) + " short" : num(n - draft.boxQty) + " over"}.</b><br>Go back and check for items missed or scanned twice. If the count is correct, you can still submit.</div>`) : ""}
       <div class="warn-box">Check the physical quantity in the carton. <b>Does it match ${n} pcs?</b><br>If not, go back and check for items scanned twice or missed.</div>
-      ${draft.replace ? `<p class="muted">This will replace the earlier scan of this carton.</p>` : ""}`,
+      ${draft.replace ? `<p class="muted">This will replace the earlier scan of this carton.</p>` : ""}
+      <div class="field" style="margin-top:12px"><label>Note (optional)</label>
+        <textarea class="input note-input" id="cfNote" maxlength="500" placeholder="e.g. Box damaged, box opened, wet, wrong label…">${esc(draft.note || "")}</textarea></div>`,
       [{ label: "No, go back", value: false }, { label: "Yes, submit", cls: "btn-green", value: true }]);
-    if (!ok) return;
+    const nt = $("#cfNote"); if (nt) { draft.note = nt.value.trim(); saveDraft(); }
+    if (!ok) { updateReceive(); return; }
     const btn = $("#submitBtn"); btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Submitting…`;
     try {
       const r = await call("staff_submit_carton", {
-        p_carton: draft.carton, p_started_at: draft.startedAt, p_replace: !!draft.replace,
+        p_carton: draft.carton, p_started_at: draft.startedAt, p_replace: !!draft.replace, p_note: draft.note || null,
         p_lines: draft.scans.map((s) => ({ barcode: s.barcode, scanned_at: s.t }))
       });
       const carton = draft.carton;
@@ -913,7 +967,7 @@
       if (!r.length) { el.innerHTML = `<div class="empty">No cartons scanned in this period.</div>`; return; }
       const tot = r.reduce((s, c) => s + c.total_qty, 0);
       el.innerHTML = `<p class="muted">${num(r.length)} cartons &middot; ${num(tot)} pcs</p><div class="tbl-scroll"><table class="tbl"><thead><tr><th>Carton</th><th>Delivery file</th><th>Staff</th><th>Submitted</th><th>Pcs</th><th></th></tr></thead><tbody>
-        ${r.map((c) => `<tr><td class="mono"><b>${esc(c.carton_no)}</b></td>
+        ${r.map((c) => `<tr><td class="mono"><b>${esc(c.carton_no)}</b>${c.note ? `<div class="muted" style="font-family:inherit">&#128221; ${esc(c.note)}</div>` : ""}</td>
           <td>${c.delivery_ref ? `<span class="pill g">${esc(c.delivery_ref)}</span>` : `<span class="pill a">Not in any delivery file</span>`}</td>
           <td>${esc(c.staff_name)}</td><td>${fmtDT(c.submitted_at)}</td><td><b>${num(c.total_qty)} pcs</b></td>
           <td><div class="actions"><button class="btn btn-ghost btn-sm" data-del="${c.id}" data-c="${esc(c.carton_no)}">Delete</button></div></td></tr>`).join("")}

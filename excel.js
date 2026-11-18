@@ -7,10 +7,16 @@
   const HEAD_FILL = FILL("FF000000"), HEAD_FONT = { color: { argb: "FFFFFFFF" }, bold: true };
   const up = (s) => String(s == null ? "" : s).trim().toUpperCase();
   // 13-digit barcode -> 12-digit item code (first 12 digits). Anything else stays as it is.
-  const itemCode = (s) => { s = String(s == null ? "" : s).trim(); return /^\d{13}$/.test(s) ? s.slice(0, 12) : s; };
+  // Long code ending in 13 digits (e.g. QR code on the tag) -> use the last 13 digits.
+  const itemCode = (s) => {
+    s = String(s == null ? "" : s).trim();
+    if (/^\d{13}$/.test(s)) return s.slice(0, 12);
+    if (s.length > 13 && /\d{13}$/.test(s)) return s.slice(-13, -1);
+    return s;
+  };
   const itemKey = (s) => up(itemCode(s));
   // Excel version of itemCode() for a barcode in cell ref
-  const itemFormula = (ref) => `IF(AND(LEN(${ref})=13,ISNUMBER(--${ref})),LEFT(${ref},12),${ref})`;
+  const itemFormula = (ref) => `IF(AND(LEN(${ref})=13,ISNUMBER(--${ref})),LEFT(${ref},12),IF(AND(LEN(${ref})>13,ISNUMBER(--RIGHT(${ref},13))),LEFT(RIGHT(${ref},13),12),${ref}))`;
 
   function waitLib() {
     return new Promise((resolve, reject) => {
@@ -178,8 +184,9 @@
       got.get(k).n += 1;
       const c = up(s.carton_no);
       cartonGot.set(c, (cartonGot.get(c) || 0) + 1);
-      const info = cartonInfo.get(c) || { staff: new Set(), last: s.submitted_at || s.scanned_at };
+      const info = cartonInfo.get(c) || { staff: new Set(), notes: new Set(), last: s.submitted_at || s.scanned_at };
       info.staff.add(s.staff_name);
+      if (s.note) info.notes.add(s.note);
       if ((s.submitted_at || s.scanned_at) > info.last) info.last = s.submitted_at || s.scanned_at;
       cartonInfo.set(c, info);
     });
@@ -232,7 +239,7 @@
 
     // ----- Sheet 3: carton summary
     const wc = wb.addWorksheet("Carton Summary");
-    header(wc, [["Carton No", 24], ["Expected Qty", 14], ["Scanned Qty", 14], ["Variance", 11], ["Status", 14], ["Scanned By", 24], ["Submitted", 21]]);
+    header(wc, [["Carton No", 24], ["Expected Qty", 14], ["Scanned Qty", 14], ["Variance", 11], ["Status", 14], ["Scanned By", 24], ["Submitted", 21], ["Note", 36]]);
     const counts = { matched: 0, variance: 0, notScanned: 0, extra: 0 };
     const nV = Math.max(2, vrows.length + 1);
     order.forEach((o, i) => {
@@ -248,6 +255,7 @@
       const info = cartonInfo.get(o.key);
       wc.getCell("F" + r).value = info ? [...info.staff].join(", ") : "";
       if (info) { const t = wc.getCell("G" + r); t.value = localDate(info.last); t.numFmt = "dd-mmm-yyyy hh:mm"; }
+      if (info && info.notes.size) { const nc = wc.getCell("H" + r); nc.value = [...info.notes].join(" | "); nc.alignment = { wrapText: true, vertical: "top" }; }
       const st = wc.getCell("E" + r);
       if (status === "Not in file") { st.fill = GREEN_FILL; st.font = GREEN_FONT; counts.extra++; }
       else if (status === "Matched") { st.fill = GREEN_FILL; st.font = GREEN_FONT; counts.matched++; }
@@ -278,7 +286,59 @@
     wd.getCell("B" + dt).value = "TOTAL"; wd.getCell("B" + dt).font = { bold: true };
     wd.getCell("C" + dt).value = { formula: `SUM(C2:C${dt - 1})`, result: totE }; wd.getCell("C" + dt).font = { bold: true };
 
-    return { wb, summary: { variances: vrows.length, excessPcs, shortPcs, ...counts, expected: totE, scanned: totG } };
+    // ----- Sheet 5: box count (Receive Boxes) per carton of the file
+    const boxes = data.boxes || [];
+    const fileOrder = order.filter((o) => !o.extra);
+    const wbx = wb.addWorksheet("Box Count");
+    header(wbx, [["Carton No", 24], ["Box Count", 12], ["Counted By", 20], ["Count Time", 19], ["Stock Scanned", 14], ["Note", 34],
+                 ["", 3], ["Box No (all boxes counted)", 26], ["Counted By", 20], ["Count Time", 19], ["In Delivery File", 16]]);
+    wbx.getCell("G1").fill = FILL("FFFFFFFF");
+    const nF = Math.max(2, fileOrder.length + 1), nBx = Math.max(2, boxes.length + 1);
+    const firstBox = new Map();
+    boxes.forEach((b) => { const k = up(b.box_no); if (!firstBox.has(k)) firstBox.set(k, b); });
+    const bc = { received: 0, missing: 0, stock: 0, extra: 0 };
+    fileOrder.forEach((o, i) => {
+      const r = i + 2, fb = firstBox.get(o.key), stock = (cartonGot.get(o.key) || 0) > 0;
+      text(wbx, "A" + r, o.label);
+      const st = wbx.getCell("B" + r);
+      st.value = { formula: `IF(SUMPRODUCT(--($H$2:$H$${nBx}=A${r}))>0,"Received","Missing")`, result: fb ? "Received" : "Missing" };
+      st.fill = fb ? GREEN_FILL : RED_FILL; st.font = fb ? GREEN_FONT : RED_FONT;
+      if (fb) { bc.received++; wbx.getCell("C" + r).value = fb.staff_name; const t = wbx.getCell("D" + r); t.value = localDate(fb.scanned_at); t.numFmt = "dd-mmm-yyyy hh:mm"; }
+      else bc.missing++;
+      const ss = wbx.getCell("E" + r);
+      ss.value = { formula: `IF(SUMPRODUCT(--(${SA}=A${r}))>0,"Yes","No")`, result: stock ? "Yes" : "No" };
+      ss.font = stock ? GREEN_FONT : AMBER_FONT; if (stock) bc.stock++;
+      const info = cartonInfo.get(o.key);
+      if (info && info.notes.size) { const nc = wbx.getCell("F" + r); nc.value = [...info.notes].join(" | "); nc.alignment = { wrapText: true, vertical: "top" }; }
+    });
+    boxes.forEach((b, i) => {
+      const r = i + 2;
+      text(wbx, "H" + r, b.box_no);
+      wbx.getCell("I" + r).value = b.staff_name;
+      const t = wbx.getCell("J" + r); t.value = localDate(b.scanned_at); t.numFmt = "dd-mmm-yyyy hh:mm";
+      const k = wbx.getCell("K" + r), yes = !!b.in_file;
+      k.value = { formula: `IF(SUMPRODUCT(--($A$2:$A$${nF}=H${r}))>0,"Yes","Extra")`, result: yes ? "Yes" : "Extra" };
+      k.fill = GREEN_FILL; k.font = GREEN_FONT; if (!yes) bc.extra++;
+    });
+    if (!boxes.length) { wbx.getCell("H2").value = "No box count found for this delivery."; wbx.getCell("H2").font = { italic: true, color: { argb: "FF6B6B6B" } }; }
+    const br = fileOrder.length + 3;
+    const totals = [
+      ["Boxes in delivery file", { formula: `COUNTA(A2:A${nF})`, result: fileOrder.length }],
+      ["Received (box count)", { formula: `COUNTIF(B2:B${nF},"Received")`, result: bc.received }, GREEN_FILL, GREEN_FONT],
+      ["Missing (box count)", { formula: `COUNTIF(B2:B${nF},"Missing")`, result: bc.missing }, bc.missing ? RED_FILL : GREEN_FILL, bc.missing ? RED_FONT : GREEN_FONT],
+      ["Extra boxes (not in file)", { formula: `COUNTIF(K2:K${nBx},"Extra")`, result: bc.extra }, bc.extra ? GREEN_FILL : null, bc.extra ? GREEN_FONT : null],
+      ["Stock scanned", { formula: `COUNTIF(E2:E${nF},"Yes")`, result: bc.stock }]
+    ];
+    totals.forEach(([k, v, fill, font], i) => {
+      const r = br + i;
+      const kc = wbx.getCell("A" + r); kc.value = k; kc.font = { bold: true };
+      const vc = wbx.getCell("B" + r); vc.value = v; vc.font = font || { bold: true }; if (fill) vc.fill = fill;
+    });
+    const nr = br + totals.length + 1;
+    wbx.getCell("A" + nr).value = "Box Count = boxes scanned in Receive Boxes from 14 days before to 60 days after the delivery date. Extra = counted for this delivery but not in any delivery file.";
+    wbx.getCell("A" + nr).font = { italic: true, color: { argb: "FF6B6B6B" } };
+
+    return { wb, summary: { variances: vrows.length, excessPcs, shortPcs, ...counts, expected: totE, scanned: totG, boxReceived: bc.received, boxMissing: bc.missing, boxExtra: bc.extra } };
   }
 
   async function downloadDeliveryReport(data) {
